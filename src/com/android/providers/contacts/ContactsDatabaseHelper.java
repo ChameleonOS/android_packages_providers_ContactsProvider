@@ -2475,6 +2475,7 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
         }
 
         if (oldVersion < 708) {
+            upgradeToVersion708(db);
             // Sort keys, phonebook labels and buckets, and search keys have
             // changed so force a rebuild.
             upgradeLocaleSpecificData = true;
@@ -4082,7 +4083,9 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
             RawContacts.SYNC4 + " " +
             "FROM " + Tables.RAW_CONTACTS + "OLD;");
         db.execSQL("DROP TABLE " + Tables.RAW_CONTACTS + "OLD;");
+    }
 
+    private void upgradeToVersion708(SQLiteDatabase db) {
         db.execSQL("ALTER TABLE " + Tables.RAW_CONTACTS
                 + " ADD " + RawContactsColumns.PHONEBOOK_LABEL_PRIMARY + " TEXT;");
         db.execSQL("ALTER TABLE " + Tables.RAW_CONTACTS
