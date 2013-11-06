@@ -63,6 +63,7 @@ import android.provider.ContactsContract.FullNameStyle;
 import android.provider.ContactsContract.Groups;
 import android.provider.ContactsContract.PhoneticNameStyle;
 import android.provider.ContactsContract.PhotoFiles;
+import android.provider.ContactsContract.PinnedPositions;
 import android.provider.ContactsContract.RawContacts;
 import android.provider.ContactsContract.Settings;
 import android.provider.ContactsContract.StatusUpdates;
@@ -111,9 +112,10 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
      *   550-599 Honeycomb-MR2
      *   600-699 Ice Cream Sandwich
      *   700-799 Jelly Bean
+     *   800-899 Kitkat
      * </pre>
      */
-    static final int DATABASE_VERSION = 710;
+    static final int DATABASE_VERSION = 803;
 
     private static final String DATABASE_NAME = "contacts2.db";
     private static final String DATABASE_PRESENCE = "presence_db";
@@ -360,6 +362,7 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
         public static final String CONCRETE_LAST_TIME_CONTACTED = Tables.CONTACTS + "."
                 + Contacts.LAST_TIME_CONTACTED;
         public static final String CONCRETE_STARRED = Tables.CONTACTS + "." + Contacts.STARRED;
+        public static final String CONCRETE_PINNED = Tables.CONTACTS + "." + Contacts.PINNED;
         public static final String CONCRETE_CUSTOM_RINGTONE = Tables.CONTACTS + "."
                 + Contacts.CUSTOM_RINGTONE;
         public static final String CONCRETE_CUSTOM_NOTIFICATION = Tables.CONTACTS + "."
@@ -410,6 +413,8 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
                 Tables.RAW_CONTACTS + "." + RawContacts.TIMES_CONTACTED;
         public static final String CONCRETE_STARRED =
                 Tables.RAW_CONTACTS + "." + RawContacts.STARRED;
+        public static final String CONCRETE_PINNED =
+                Tables.RAW_CONTACTS + "." + RawContacts.PINNED;
 
         public static final String DISPLAY_NAME = RawContacts.DISPLAY_NAME_PRIMARY;
         public static final String DISPLAY_NAME_SOURCE = RawContacts.DISPLAY_NAME_SOURCE;
@@ -721,6 +726,7 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
         String KNOWN_ACCOUNTS = "known_accounts";
         String ICU_VERSION = "icu_version";
         String LOCALE = "locale";
+        String DATABASE_TIME_CREATED = "database_time_created";
     }
 
     /** In-memory cache of previously found MIME-type mappings */
@@ -952,6 +958,15 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
 
         mSyncState.createDatabase(db);
 
+        // Create the properties table first so the create time is available as soon as possible.
+        // The create time is needed by BOOT_COMPLETE to send broadcasts.
+        db.execSQL("CREATE TABLE " + Tables.PROPERTIES + " (" +
+                PropertiesColumns.PROPERTY_KEY + " TEXT PRIMARY KEY, " +
+                PropertiesColumns.PROPERTY_VALUE + " TEXT " +
+                ");");
+        setProperty(db, DbProperties.DATABASE_TIME_CREATED, String.valueOf(
+                System.currentTimeMillis()));
+
         db.execSQL("CREATE TABLE " + Tables.ACCOUNTS + " (" +
                 AccountsColumns._ID + " INTEGER PRIMARY KEY AUTOINCREMENT," +
                 AccountsColumns.ACCOUNT_NAME + " TEXT, " +
@@ -971,6 +986,7 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
                 Contacts.TIMES_CONTACTED + " INTEGER NOT NULL DEFAULT 0," +
                 Contacts.LAST_TIME_CONTACTED + " INTEGER," +
                 Contacts.STARRED + " INTEGER NOT NULL DEFAULT 0," +
+                Contacts.PINNED + " INTEGER NOT NULL DEFAULT " + PinnedPositions.UNPINNED + "," +
                 Contacts.HAS_PHONE_NUMBER + " INTEGER NOT NULL DEFAULT 0," +
                 Contacts.LOOKUP_KEY + " TEXT," +
                 ContactsColumns.LAST_STATUS_UPDATE_ID + " INTEGER REFERENCES data(_id)," +
@@ -1002,7 +1018,8 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
                 RawContacts.TIMES_CONTACTED + " INTEGER NOT NULL DEFAULT 0," +
                 RawContacts.LAST_TIME_CONTACTED + " INTEGER," +
                 RawContacts.STARRED + " INTEGER NOT NULL DEFAULT 0," +
-                RawContacts.DISPLAY_NAME_PRIMARY + " TEXT," +
+                RawContacts.PINNED + " INTEGER NOT NULL DEFAULT "  + PinnedPositions.UNPINNED +
+                    "," + RawContacts.DISPLAY_NAME_PRIMARY + " TEXT," +
                 RawContacts.DISPLAY_NAME_ALTERNATIVE + " TEXT," +
                 RawContacts.DISPLAY_NAME_SOURCE + " INTEGER NOT NULL DEFAULT " +
                         DisplayNameSources.UNDEFINED + "," +
@@ -1260,6 +1277,8 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE " + Tables.CALLS + " (" +
                 Calls._ID + " INTEGER PRIMARY KEY AUTOINCREMENT," +
                 Calls.NUMBER + " TEXT," +
+                Calls.NUMBER_PRESENTATION + " INTEGER NOT NULL DEFAULT " +
+                        Calls.PRESENTATION_ALLOWED + "," +
                 Calls.DATE + " INTEGER," +
                 Calls.DURATION + " INTEGER," +
                 Calls.TYPE + " INTEGER," +
@@ -1304,11 +1323,6 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
                 StatusUpdates.STATUS_ICON + " INTEGER" +
         ");");
 
-        db.execSQL("CREATE TABLE " + Tables.PROPERTIES + " (" +
-                PropertiesColumns.PROPERTY_KEY + " TEXT PRIMARY KEY, " +
-                PropertiesColumns.PROPERTY_VALUE + " TEXT " +
-        ");");
-
         createDirectoriesTable(db);
         createSearchIndexTable(db, false /* we build stats table later */);
 
@@ -1350,12 +1364,6 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
 
         ContentResolver.requestSync(null /* all accounts */,
                 ContactsContract.AUTHORITY, new Bundle());
-
-        // Only send broadcasts for regular contacts db.
-        if (dbForProfile() == 0) {
-            mContext.sendBroadcast(new Intent(ContactsContract.Intents.CONTACTS_DATABASE_CREATED),
-                    android.Manifest.permission.READ_CONTACTS);
-        }
     }
 
     protected void initializeAutoIncrementSequences(SQLiteDatabase db) {
@@ -1640,7 +1648,9 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
                 + ContactsColumns.CONCRETE_TIMES_CONTACTED
                         + " AS " + RawContacts.TIMES_CONTACTED + ","
                 + ContactsColumns.CONCRETE_STARRED
-                        + " AS " + RawContacts.STARRED;
+                        + " AS " + RawContacts.STARRED + ","
+                + ContactsColumns.CONCRETE_PINNED
+                        + " AS " + RawContacts.PINNED;
 
         String contactNameColumns =
                 "name_raw_contact." + RawContacts.DISPLAY_NAME_SOURCE
@@ -1708,7 +1718,8 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
                 + RawContacts.SEND_TO_VOICEMAIL + ","
                 + RawContacts.LAST_TIME_CONTACTED + ","
                 + RawContacts.TIMES_CONTACTED + ","
-                + RawContacts.STARRED;
+                + RawContacts.STARRED + ","
+                + RawContacts.PINNED;
 
         String rawContactsSelect = "SELECT "
                 + RawContactsColumns.CONCRETE_ID + " AS " + RawContacts._ID + ","
@@ -1750,6 +1761,8 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
                         + " AS " + Contacts.SEND_TO_VOICEMAIL + ", "
                 + ContactsColumns.CONCRETE_STARRED
                         + " AS " + Contacts.STARRED + ", "
+                + ContactsColumns.CONCRETE_PINNED
+                + " AS " + Contacts.PINNED + ", "
                 + ContactsColumns.CONCRETE_TIMES_CONTACTED
                         + " AS " + Contacts.TIMES_CONTACTED;
 
@@ -2468,7 +2481,6 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
         }
 
         if (oldVersion < 707) {
-            oldVersion = 707;
             upgradeToVersion707(db);
             upgradeViewsAndTriggers = true;
             oldVersion = 707;
@@ -2492,6 +2504,30 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
             upgradeToVersion710(db);
             upgradeViewsAndTriggers = true;
             oldVersion = 710;
+        }
+
+        if (oldVersion < 800) {
+            upgradeToVersion800(db);
+            oldVersion = 800;
+        }
+
+        if (oldVersion < 801) {
+            setProperty(db, DbProperties.DATABASE_TIME_CREATED, String.valueOf(
+                    System.currentTimeMillis()));
+            oldVersion = 801;
+        }
+
+        if (oldVersion < 802) {
+            upgradeToVersion802(db);
+            upgradeViewsAndTriggers = true;
+            oldVersion = 802;
+        }
+
+        if (oldVersion < 803) {
+            // Rebuild the search index so that names, organizations and nicknames are
+            // now indexed as names.
+            upgradeSearchIndex = true;
+            oldVersion = 803;
         }
 
         if (upgradeViewsAndTriggers) {
@@ -4086,14 +4122,10 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
     }
 
     private void upgradeToVersion708(SQLiteDatabase db) {
-        db.execSQL("ALTER TABLE " + Tables.RAW_CONTACTS
-                + " ADD " + RawContactsColumns.PHONEBOOK_LABEL_PRIMARY + " TEXT;");
-        db.execSQL("ALTER TABLE " + Tables.RAW_CONTACTS
-                + " ADD " + RawContactsColumns.PHONEBOOK_BUCKET_PRIMARY + " INTEGER;");
-        db.execSQL("ALTER TABLE " + Tables.RAW_CONTACTS
-                + " ADD " + RawContactsColumns.PHONEBOOK_LABEL_ALTERNATIVE + " TEXT;");
-        db.execSQL("ALTER TABLE " + Tables.RAW_CONTACTS
-                + " ADD " + RawContactsColumns.PHONEBOOK_BUCKET_ALTERNATIVE + " INTEGER;");
+        db.execSQL("ALTER TABLE raw_contacts ADD phonebook_label TEXT;");
+        db.execSQL("ALTER TABLE raw_contacts ADD phonebook_bucket INTEGER;");
+        db.execSQL("ALTER TABLE raw_contacts ADD phonebook_label_alt TEXT;");
+        db.execSQL("ALTER TABLE raw_contacts ADD phonebook_bucket_alt INTEGER;");
     }
 
     private void upgradeToVersion710(SQLiteDatabase db) {
@@ -4117,6 +4149,26 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
 
         db.execSQL("CREATE INDEX deleted_contacts_contact_deleted_timestamp_index "
                 + "ON deleted_contacts(contact_deleted_timestamp)");
+    }
+
+    private void upgradeToVersion800(SQLiteDatabase db) {
+        // Default Calls.PRESENTATION_ALLOWED=1
+        db.execSQL("ALTER TABLE calls ADD presentation INTEGER NOT NULL DEFAULT 1;");
+
+        // Re-map CallerInfo.{..}_NUMBER strings to Calls.PRESENTATION_{..} ints
+        //  PRIVATE_NUMBER="-2" -> PRESENTATION_RESTRICTED=2
+        //  UNKNOWN_NUMBER="-1" -> PRESENTATION_UNKNOWN   =3
+        // PAYPHONE_NUMBER="-3" -> PRESENTATION_PAYPHONE  =4
+        db.execSQL("UPDATE calls SET presentation=2, number='' WHERE number='-2';");
+        db.execSQL("UPDATE calls SET presentation=3, number='' WHERE number='-1';");
+        db.execSQL("UPDATE calls SET presentation=4, number='' WHERE number='-3';");
+    }
+
+    private void upgradeToVersion802(SQLiteDatabase db) {
+        db.execSQL("ALTER TABLE contacts ADD pinned INTEGER NOT NULL DEFAULT " +
+                ContactsContract.PinnedPositions.UNPINNED + ";");
+        db.execSQL("ALTER TABLE raw_contacts ADD pinned INTEGER NOT NULL DEFAULT  " +
+                ContactsContract.PinnedPositions.UNPINNED + ";");
     }
 
     public String extractHandleFromEmailAddress(String email) {
@@ -4392,12 +4444,16 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
     }
 
     public NameSplitter createNameSplitter() {
+        return createNameSplitter(Locale.getDefault());
+    }
+
+    public NameSplitter createNameSplitter(Locale locale) {
         mNameSplitter = new NameSplitter(
                 mContext.getString(com.android.internal.R.string.common_name_prefixes),
                 mContext.getString(com.android.internal.R.string.common_last_name_prefixes),
                 mContext.getString(com.android.internal.R.string.common_name_suffixes),
                 mContext.getString(com.android.internal.R.string.common_name_conjunctions),
-                Locale.getDefault());
+                locale);
         return mNameSplitter;
     }
 
@@ -5155,12 +5211,6 @@ public class ContactsDatabaseHelper extends SQLiteOpenHelper {
         }
 
         return sb.toString();
-    }
-
-    protected String getCountryIso() {
-        CountryDetector detector =
-            (CountryDetector) mContext.getSystemService(Context.COUNTRY_DETECTOR);
-        return detector.detectCountry().getCountryIso();
     }
 
     public void deleteStatusUpdate(long dataId) {
