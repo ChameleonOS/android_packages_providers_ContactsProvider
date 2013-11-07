@@ -1808,7 +1808,7 @@ public class ContactAggregator {
                         + Contacts.LOOKUP_KEY + ", "
                         + Contacts.CONTACT_LAST_UPDATED_TIMESTAMP
                         + ") " +
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
         int NAME_RAW_CONTACT_ID = 1;
         int PHOTO_ID = 2;
